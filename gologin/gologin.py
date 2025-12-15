@@ -17,6 +17,7 @@ import sentry_sdk
 from urllib.parse import quote
 
 from gologin.browserManager.languages import get_intl_profile_config
+from gologin.browserManager.browserManager import SECURED_ORBITA_OPTS
 
 from .golgoin_types import CreateCustomBrowserOptions, CreateProfileRandomFingerprintOptions, BrowserProxyCreateValidation
 from .http_client import make_request
@@ -713,10 +714,33 @@ class GoLogin(object):
         preferences['gologin'] = gologin
 
         intl_profile_config = get_intl_profile_config(profile, self.tz, self.profile.get('autoLang', True))
+        profile['securedOrbitaVersion'] = 141
+        orbita_params_token = ''
+        if profile.get('securedOrbitaVersion') and (self.orbita_major_version >= profile.get('securedOrbitaVersion')):
+            try:
+                token_res = self.requestOrbitaProfileParamsToken(self.profile_id)
+                print('token_res', token_res)
+                orbita_params_token = token_res.get('token', '')
+                print('orbita_params_token', orbita_params_token)
+            except Exception as e:
+                logger.debug('Error requesting orbita params token: %s', e)
+        
+        client_gologin_opts = {}
+        for key in SECURED_ORBITA_OPTS:
+            if key in gologin:
+                client_gologin_opts[key] = gologin[key]
+        
+        orbita_config = {
+            'intl': intl_profile_config,
+            'gologin': {
+                'profile_token': orbita_params_token,
+                **client_gologin_opts
+            }
+        }
         
         orbita_config_file = os.path.join(self.profile_path, 'orbita.config')
         with open(orbita_config_file, 'w', encoding='utf-8') as ofile:
-            json.dump({'intl': intl_profile_config}, ofile, indent='\t')
+            json.dump(orbita_config, ofile, indent='\t')
         
         with open(pref_file, 'w') as pfile:
             # print('preferences', preferences)
@@ -843,6 +867,16 @@ class GoLogin(object):
             'Authorization': 'Bearer ' + self.access_token,
             'User-Agent': 'Selenium-API'
         }
+
+    def requestOrbitaProfileParamsToken(self, profile_id):
+        response = make_request(
+            'GET',
+            API_URL + '/browser/' + profile_id + '/orbita-params-token',
+            headers=self.headers()
+        )
+        responseJson = response.content.decode('utf-8')
+        response_data = json.loads(responseJson)
+        return response_data
 
     def waitDebuggingUrl(self, delay_s, remote_orbita_url, try_count=3):
         url = remote_orbita_url + '/json/version'
