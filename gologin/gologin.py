@@ -714,14 +714,12 @@ class GoLogin(object):
         preferences['gologin'] = gologin
 
         intl_profile_config = get_intl_profile_config(profile, self.tz, self.profile.get('autoLang', True))
-        print('self.orbita_major_version', profile['securedOrbitaVersion'], self.orbita_major_version)
+
         orbita_params_token = ''
         if profile.get('securedOrbitaVersion') and (self.orbita_major_version >= profile.get('securedOrbitaVersion')):
             try:
                 token_res = self.requestOrbitaProfileParamsToken(self.profile_id)
-                print('token_res', token_res)
                 orbita_params_token = token_res.get('token', '')
-                print('orbita_params_token', orbita_params_token)
             except Exception as e:
                 logger.debug('Error requesting orbita params token: %s', e)
         
