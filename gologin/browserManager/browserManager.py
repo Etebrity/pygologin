@@ -200,3 +200,9 @@ class BrowserManager:
             return True
         except OSError:
             return False
+
+SECURED_ORBITA_OPTS = [
+    'webGpu', 'webgl', 'webglParams', 'webRTC', 'webrtc', 'mediaDevices', 'plugins', 'audioContext', 'canvasMode',
+    'canvasNoise', 'webgl_noice_enable', 'webglNoiceEnable', 'webgl_noise_enable', 'client_rects_noise_enable',
+    'webgl_noise_value', 'webglNoiseValue', 'getClientRectsNoice', 'get_client_rects_noise',
+]

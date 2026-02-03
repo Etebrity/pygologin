@@ -2,6 +2,12 @@
 
 Combined changelog for GoLogin python SDK
 
+## [2026.02.03] 2026-02-03
+
+### New
+
+* Added support for 143 orbita browser version
+
 ## [2025.11.17] 2025-11-17
 
 
