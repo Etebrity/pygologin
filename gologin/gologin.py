@@ -216,7 +216,7 @@ class GoLogin(object):
                 params.append(extToParams)
 
         if proxy:
-            hr_rules = 'MAP * 0.0.0.0 , EXCLUDE %s' % (proxy_host)
+            hr_rules = 'MAP * 0.0.0.0 , EXCLUDE %s , EXCLUDE api.gologin.com , EXCLUDE api.gologin.co' % (proxy_host)
             params.append('--host-resolver-rules='+hr_rules)
         
         if proxy and self.orbita_major_version < 135:
@@ -714,7 +714,7 @@ class GoLogin(object):
         preferences['gologin'] = gologin
 
         intl_profile_config = get_intl_profile_config(profile, self.tz, self.profile.get('autoLang', True))
-        profile['securedOrbitaVersion'] = 141
+        print('self.orbita_major_version', profile['securedOrbitaVersion'], self.orbita_major_version)
         orbita_params_token = ''
         if profile.get('securedOrbitaVersion') and (self.orbita_major_version >= profile.get('securedOrbitaVersion')):
             try:
@@ -871,7 +871,7 @@ class GoLogin(object):
     def requestOrbitaProfileParamsToken(self, profile_id):
         response = make_request(
             'GET',
-            API_URL + '/browser/' + profile_id + '/orbita-params-token',
+            API_URL + '/browser/features/' + profile_id + '/profile-params-for-orbita-token',
             headers=self.headers()
         )
         responseJson = response.content.decode('utf-8')
