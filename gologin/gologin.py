@@ -61,6 +61,7 @@ class GoLogin(object):
         self.tmpdir = options.get('tmpdir', tempfile.gettempdir())
         self.address = options.get('address', '127.0.0.1')
         self.extra_params = options.get('extra_params', [])
+        self.vnc_port = options.get('vnc_port', 0)
         self.port = options.get('port', getRandomPort())
         self.local = options.get('local', False)
         self.spawn_browser = options.get('spawn_browser', True)
@@ -228,11 +229,20 @@ class GoLogin(object):
         for param in self.extra_params:
             params.append(param)
 
+        env = os.environ.copy()
+
+        if self.vnc_port != 0:
+            params.append('--no-sandbox')
+            params.append('--new-window')
+            env["DISPLAY"] = f":{self.vnc_port}"
+
         if sys.platform == "darwin":
-            open_browser = subprocess.Popen(params)
+            print(params)
+            open_browser = subprocess.Popen(params, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
             self.pid = open_browser.pid
         else:
-            open_browser = subprocess.Popen(params, start_new_session=True)
+            print(params)
+            open_browser = subprocess.Popen(params, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, start_new_session=True)
             self.pid = open_browser.pid
 
         try_count = 1
@@ -991,31 +1001,22 @@ class GoLogin(object):
 
             profile_options['navigator']['language'] = language
 
-        profile = {
-            "name": "default_name",
-            "notes": "auto generated",
-            "browserType": "chrome",
-            "os": "lin",
-            "googleServicesEnabled": True,
-            "lockEnabled": False,
-            "audioContext": {
-                "mode": "noise"
-            },
-            "canvas": {
-                "mode": "noise"
-            },
-            "webRTC": {
-                "mode": "disabled",
-                "enabled": False,
-                "customize": True,
-                "fillBasedOnIp": True
-            },
-            "fonts": {
-                "families": profile_options.get('fonts')
-            },
-            "navigator": profile_options.get('navigator', {}),
-            "profile": json.dumps(profile_options),
+        profile = profile_options
+        profile["notes"] = "auto generated"
+
+        if profile["webGLMetadata"]["mode"] == "noise":
+            profile["webGLMetadata"]["mode"] = "mask"
+        else:
+            profile["webGLMetadata"]["mode"] = "off"
+
+        profile["navigator"]["deviceMemory"] = min(profile["navigator"]["deviceMemory"], 1) * 1024
+        profile["fonts"] = {
+            "families": profile_options.get('fonts')
         }
+        profile["webRTC"] = profile_options.get('webRTC', {})
+        profile["webRTC"]["mode"] = "alerted"
+        profile["name"] = "default_name"
+        profile["browserType"] = "chrome"
 
         if options.get('storage'):
             profile['storage'] = options.get('storage')
@@ -1023,6 +1024,7 @@ class GoLogin(object):
         for k, v in options.items():
             profile[k] = v
 
+        logger.debug(profile)
         http_response = make_request('POST', API_URL + '/browser', headers=self.headers(), json_data=profile)
         response = json.loads(http_response.content.decode('utf-8'))
         if not (response.get('statusCode') is None):
