@@ -1234,6 +1234,10 @@ class GoLogin(object):
 
         return response.status_code
 
+    def getViewport(self):
+        s = self.profile.get("navigator").get("resolution").split('x')
+        return [int(s[0]), int(s[1])]
+
 
 def getRandomPort():
     while True:
