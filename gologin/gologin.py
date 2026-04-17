@@ -1151,7 +1151,7 @@ class GoLogin(object):
         """Determine available proxy type based on traffic data"""
         if availableTrafficData['mobileTrafficData']['trafficUsedBytes'] > availableTrafficData['mobileTrafficData']['trafficLimitBytes']:
             return 'mobile'
-        elif availableTrafficData['residentialTrafficData']['trafficUsedBytes'] < availableTrafficData['residentialTrafficData']['trafficLimitBytes']:
+        elif availableTrafficData['residentTrafficData']['trafficUsedBytes'] < availableTrafficData['residentTrafficData']['trafficLimitBytes']:
             return 'resident'
         elif availableTrafficData['dataCenterTrafficData']['trafficUsedBytes'] < availableTrafficData['dataCenterTrafficData']['trafficLimitBytes']:
             return 'dataCenter'
