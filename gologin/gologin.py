@@ -359,6 +359,7 @@ class GoLogin(object):
             f"Default{SEPARATOR}GPUCache",
             f"Default{SEPARATOR}DawnCache",
             f"Default{SEPARATOR}fonts_config",
+            f"Default{SEPARATOR}Shared Dictionary{SEPARATOR}cache",
             f"GrShaderCache",
             f"ShaderCache",
             f"biahpgbdmdkfgndcmfiipgcebobojjkp",
