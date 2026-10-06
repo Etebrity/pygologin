@@ -2,6 +2,20 @@
 
 Combined changelog for GoLogin python SDK
 
+## [2026.06.24] 2026-06-24
+
+### New
+
+* Added support for custom request headers via `headers` option in GoLogin constructor
+
+## [2026.05.05] 2026-05-05
+
+
+### Fixes
+
+* addGologinProxyToProfile method now works without errors
+* Miscellaneous fixes for cookie import
+
 ## [2026.02.03] 2026-02-03
 
 ### New

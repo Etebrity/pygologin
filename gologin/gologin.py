@@ -74,6 +74,7 @@ class GoLogin(object):
         self.executablePath = options.get('executable_path', '')
         self.is_cloud_headless = options.get('is_cloud_headless', True)
         self.is_new_cloud_browser = options.get('is_new_cloud_browser', True)
+        self.extra_headers = options.get('headers', {}) or {}
         self.orbita_major_version = 0
         self.profile_path = ''
 
@@ -325,7 +326,8 @@ class GoLogin(object):
             'Authorization': 'Bearer ' + self.access_token,
             'User-Agent': 'Selenium-API',
             'Content-Type': 'application/zip',
-            'browserId': self.profile_id
+            'browserId': self.profile_id,
+            **self.extra_headers,
         }
 
         response = make_request('PUT', FILES_GATEWAY + '/upload', headers=headers, data=open(self.profile_zip_path_upload, 'rb'))
@@ -340,7 +342,8 @@ class GoLogin(object):
 
         headers = {
             'Authorization': 'Bearer ' + self.access_token,
-            'User-Agent': 'Selenium-API'
+            'User-Agent': 'Selenium-API',
+            **self.extra_headers,
         }
 
         response = make_request('GET', API_URL + '/browser/' + self.profile_id + '/storage-signature', headers=headers)
@@ -369,6 +372,7 @@ class GoLogin(object):
             f"Default{SEPARATOR}GPUCache",
             f"Default{SEPARATOR}DawnCache",
             f"Default{SEPARATOR}fonts_config",
+            f"Default{SEPARATOR}Shared Dictionary{SEPARATOR}cache",
             f"GrShaderCache",
             f"ShaderCache",
             f"biahpgbdmdkfgndcmfiipgcebobojjkp",
@@ -416,7 +420,8 @@ class GoLogin(object):
         profile = self.profile_id if profile_id == None else profile_id
         headers = {
             'Authorization': 'Bearer ' + self.access_token,
-            'User-Agent': 'Selenium-API'
+            'User-Agent': 'Selenium-API',
+            **self.extra_headers,
         }
         response = make_request('GET', API_URL + '/browser/features/' + profile + '/info-for-run', headers=headers)
         
@@ -440,7 +445,8 @@ class GoLogin(object):
         headers = {
             'Authorization': 'Bearer ' + self.access_token,
             'User-Agent': 'Selenium-API',
-            'browserId': self.profile_id
+            'browserId': self.profile_id,
+            **self.extra_headers,
         }
 
         response = make_request('GET', FILES_GATEWAY + '/download', headers=headers)
@@ -547,7 +553,7 @@ class GoLogin(object):
                 make_request(
                     'POST',
                     f"{API_URL}/proxy/set_proxy_statuses",
-                    headers={'Authorization': f'Bearer {self.access_token}'},
+                    headers={'Authorization': f'Bearer {self.access_token}', **self.extra_headers},
                     json_data=status_body,
                     timeout=13
                 )
@@ -861,7 +867,8 @@ class GoLogin(object):
                 f"{API_URL}/browser/features/profile/{self.profile_id}/update_after_close",
                 headers={
                     'Authorization': f'Bearer {self.access_token}',
-                    'User-Agent': 'Selenium-API'
+                    'User-Agent': 'Selenium-API',
+                    **self.extra_headers,
                 },
                 json_data=body
             )
@@ -873,7 +880,8 @@ class GoLogin(object):
     def headers(self):
         return {
             'Authorization': 'Bearer ' + self.access_token,
-            'User-Agent': 'Selenium-API'
+            'User-Agent': 'Selenium-API',
+            **self.extra_headers,
         }
 
     def requestOrbitaProfileParamsToken(self, profile_id):
@@ -1052,6 +1060,7 @@ class GoLogin(object):
             headers={
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
+                **self.extra_headers,
             },
             json_data=options
         )
@@ -1077,6 +1086,7 @@ class GoLogin(object):
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
                 'Content-Type': 'application/json',
+                **self.extra_headers,
             },
             json_data={"browsersIds": profileIds}
         )
@@ -1097,6 +1107,7 @@ class GoLogin(object):
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
                 'Content-Type': 'application/json',
+                **self.extra_headers,
             },
             json_data={
                 "os": os_type,
@@ -1120,6 +1131,7 @@ class GoLogin(object):
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
                 'Content-Type': 'application/json',
+                **self.extra_headers,
             },
             json_data={
                 "browserIds": profileIds,
@@ -1141,6 +1153,7 @@ class GoLogin(object):
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
                 'Content-Type': 'application/json',
+                **self.extra_headers,
             },
             json_data=proxyData
         )
@@ -1149,14 +1162,30 @@ class GoLogin(object):
 
     def getAvailableType(self, availableTrafficData):
         """Determine available proxy type based on traffic data"""
-        if availableTrafficData['mobileTrafficData']['trafficUsedBytes'] > availableTrafficData['mobileTrafficData']['trafficLimitBytes']:
-            return 'mobile'
-        elif availableTrafficData['residentTrafficData']['trafficUsedBytes'] < availableTrafficData['residentTrafficData']['trafficLimitBytes']:
-            return 'resident'
-        elif availableTrafficData['dataCenterTrafficData']['trafficUsedBytes'] < availableTrafficData['dataCenterTrafficData']['trafficLimitBytes']:
-            return 'dataCenter'
-        else:
+
+        def traffic_has_capacity(block):
+            if not block or not isinstance(block, dict):
+                return False
+            used = block.get('trafficUsedBytes')
+            limit = block.get('trafficLimitBytes')
+            if used is None or limit is None:
+                return False
+            return used < limit
+
+        if not isinstance(availableTrafficData, dict):
             return 'none'
+
+        mobile = availableTrafficData.get('mobileTrafficData')
+        residential = availableTrafficData.get('residentTrafficData') or availableTrafficData.get('residentialTrafficData')
+        datacenter = availableTrafficData.get('dataCenterTrafficData')
+
+        if traffic_has_capacity(mobile):
+            return 'mobile'
+        if traffic_has_capacity(residential):
+            return 'resident'
+        if traffic_has_capacity(datacenter):
+            return 'dataCenter'
+        return 'none'
 
     def addGologinProxyToProfile(self, profileId, countryCode, proxyType=''):
         """Add Gologin proxy to a profile"""
@@ -1170,6 +1199,7 @@ class GoLogin(object):
                     'Authorization': f'Bearer {self.access_token}',
                     'User-Agent': 'gologin-api',
                     'Content-Type': 'application/json',
+                    **self.extra_headers,
                 }
             )
 
@@ -1204,6 +1234,7 @@ class GoLogin(object):
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
                 'Content-Type': 'application/json',
+                **self.extra_headers,
             },
             json_data={
                 "countryCode": countryCode,
@@ -1228,6 +1259,7 @@ class GoLogin(object):
                 'Authorization': f'Bearer {self.access_token}',
                 'User-Agent': 'gologin-api',
                 'Content-Type': 'application/json',
+                **self.extra_headers,
             },
             json_data=cookies
         )
