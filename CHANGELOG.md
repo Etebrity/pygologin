@@ -2,6 +2,15 @@
 
 Combined changelog for GoLogin python SDK
 
+## Unreleased
+
+### Fixes
+
+* Store Chromium cookie times in microseconds since 1601 and export Unix seconds without padding timestamps.
+* Repair legacy SDK cookie timestamps and stale duplicates before browser startup, with SQLite backups under `<tmpdir>/cookie-repair-backups/<profile-id>/`.
+* Preserve cookie metadata and unique indexes during imports; prefer the active Network database and never overwrite saved cookies with stale imports.
+* Read cookie columns by name for compatibility with Chromium schema changes.
+
 ## [2026.06.24] 2026-06-24
 
 ### New

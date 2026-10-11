@@ -1,303 +1,170 @@
-import sqlite3
-import base64
-from typing import List, Dict, Tuple
-import datetime
-import time
 import os
-from os import access, F_OK
+import sqlite3
+import time
+from contextlib import closing
+from pathlib import Path
+from typing import List, Dict, Tuple
+
+from .cookie_database import (
+    chromium_to_unix, malformed, repair_database, unix_to_chromium,
+)
 
 MAX_SQLITE_VARIABLES = 1
-
-SAME_SITE = {
-    -1: 'unspecified',
-    0: 'no_restriction',
-    1: 'lax',
-    2: 'strict',
-}
-
+SAME_SITE = {-1: 'unspecified', 0: 'no_restriction', 1: 'lax', 2: 'strict'}
 COOKIE_ROW_COLUMN_NAMES = [
-    'creation_utc',
-    'top_frame_site_key',
-    'host_key',
-    'name',
-    'value',
-    'encrypted_value',
-    'path',
-    'expires_utc',
-    'is_secure',
-    'is_httponly',
-    'last_access_utc',
-    'has_expires',
-    'is_persistent',
-    'priority',
-    'samesite',
-    'source_scheme',
-    'source_port',
-    'is_same_party',
-    'last_update_utc',
-    'source_type',
-    'has_cross_site_ancestor'
+    'creation_utc', 'top_frame_site_key', 'host_key', 'name', 'value',
+    'encrypted_value', 'path', 'expires_utc', 'is_secure', 'is_httponly',
+    'last_access_utc', 'has_expires', 'is_persistent', 'priority', 'samesite',
+    'source_scheme', 'source_port', 'is_same_party', 'last_update_utc',
+    'source_type', 'has_cross_site_ancestor',
 ]
 
-class CookiesManager():
+
+class CookiesManager:
     def __init__(self, *args, **kwargs):
         self.profile_id = kwargs.get('profile_id')
         self.tmpdir = kwargs.get('tmpdir')
 
-    def create_db_file(self, cookies_file_path, cookies_file_second_path=None, create_cookies_table_query=None):
-        with open(cookies_file_path, 'w') as f:
-            pass
-        
-        conn = sqlite3.connect(cookies_file_path)
-        if create_cookies_table_query:
-            conn.execute(create_cookies_table_query)
-        conn.commit()
-        conn.close()
+    def _cookie_paths(self):
+        root = Path(self.tmpdir) / ('gologin_' + self.profile_id) / 'Default'
+        return root / 'Network' / 'Cookies', root / 'Cookies'
 
-        self._ensure_directory_exists(cookies_file_path)
-        if cookies_file_second_path:
-            self._ensure_directory_exists(cookies_file_second_path)
-            try:
-                with open(cookies_file_path, 'rb') as src_file:
-                    with open(cookies_file_second_path, 'wb') as dst_file:
-                        dst_file.write(src_file.read())
-            except Exception as e:
-                print(f'Error copying cookies file: {str(e)}')
-    
     def _ensure_directory_exists(self, file_path):
-        directory = os.path.dirname(file_path)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory, exist_ok=True)
+        Path(file_path).parent.mkdir(parents=True, exist_ok=True)
 
-    def get_db(self, file_path = None):
-        if (not file_path):
-            file_path = self.get_cookies_file_path()
-        connection_opts = {"database": file_path}
-        # print('FILEPATH', self.get_cookies_file_path())
-        return sqlite3.connect(**connection_opts)
+    def get_db(self, file_path=None):
+        return sqlite3.connect(file_path or self.get_cookies_file_path())
 
-    def get_chunked_insert_values(self, cookies_arr: List[dict]) -> List[Tuple[str, List]]:
-        today_unix = int(time.time())
+    def create_db_file(self, cookies_file_path, cookies_file_second_path=None,
+                       create_cookies_table_query=None):
+        # Never truncate an existing profile database, even if an import fails.
+        self._ensure_directory_exists(cookies_file_path)
+        with closing(self.get_db(cookies_file_path)) as db, db:
+            if not db.execute('PRAGMA table_info(cookies)').fetchall():
+                if not create_cookies_table_query:
+                    raise ValueError('A cookie table schema is required for a new database')
+                db.execute(create_cookies_table_query)
+        self._repair_file(cookies_file_path)
+        if cookies_file_second_path and not Path(cookies_file_second_path).exists():
+            self._ensure_directory_exists(cookies_file_second_path)
+            with closing(self.get_db(cookies_file_path)) as source:
+                with closing(self.get_db(cookies_file_second_path)) as target:
+                    source.backup(target)
 
-        chunked_cookies_arr = [cookies_arr[i:i + MAX_SQLITE_VARIABLES] for i in range(0, len(cookies_arr), MAX_SQLITE_VARIABLES)]
+    def _repair_file(self, path):
+        backup = Path(self.tmpdir) / 'cookie-repair-backups' / self.profile_id
+        return repair_database(path, backup)
 
-        # for cookies in chunked_cookies_arr:
-            # print('COOKIES::::::', cookies)
+    def repair_cookies(self):
+        """Repair downloaded profiles while Chromium is still closed."""
+        return {str(path): self._repair_file(path)
+                for path in self._cookie_paths() if path.exists()}
+
+    def _insert_row(self, cookie):
+        created = cookie.get('creationDate') or time.time()
+        if created < 1000000000000000:
+            created = self.unix_to_ldap(created)
+        elif malformed(created):
+            created //= 10
+        expiry = 0 if cookie.get('session') else self.unix_to_ldap(cookie.get('expirationDate', 0))
+        if cookie.get('domain') == '.mail.google.com' and cookie['name'] == 'COMPASS':
+            expiry = 0
+        secure = bool(cookie.get('secure') or cookie['name'].startswith(('__Host-', '__Secure-')))
+        return dict(
+            creation_utc=int(created), host_key=cookie.get('domain', ''),
+            top_frame_site_key=cookie.get('topFrameSiteKey') or '', name=cookie['name'],
+            value='', encrypted_value=cookie['value'], path=cookie.get('path') or '/',
+            expires_utc=expiry, is_secure=int(secure), is_httponly=int(bool(cookie.get('httpOnly'))),
+            last_access_utc=int(created), has_expires=int(bool(expiry)), is_persistent=int(bool(expiry)),
+            priority=1, samesite=next((k for k, v in SAME_SITE.items() if v == cookie.get('sameSite')), -1),
+            source_scheme=cookie.get('sourceScheme', 2 if secure else 1),
+            source_port=cookie.get('sourcePort', 443 if secure else 80),
+            is_same_party=0, last_update_utc=int(created), source_type=0,
+            has_cross_site_ancestor=int(bool(cookie.get('hasCrossSiteAncestor'))),
+        )
+
+    def get_chunked_insert_values(self, cookies_arr: List[dict], columns=None) -> List[Tuple[str, List]]:
+        names = [name for name in COOKIE_ROW_COLUMN_NAMES if columns is None or name in columns]
+        query = 'INSERT INTO cookies (' + ','.join(names) + ') VALUES (' + ','.join('?' for _ in names) + ')'
+        return [(query, [tuple(row[name] for name in names)])
+                for row in (self._insert_row(cookie) for cookie in cookies_arr)]
+
+    def load_cookies_from_file(self, cookies_file_path=None, is_second_try=False) -> List[Dict]:
+        path = Path(cookies_file_path or self.get_cookies_file_path())
+        if not path.exists():
+            return []
+        # An existing Network DB is authoritative, even if empty. Do not fall
+        # back to a stale legacy DB or rely on Chromium's column order.
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            db.row_factory = sqlite3.Row
+            cookies = []
+            for row in db.execute('SELECT * FROM cookies'):
+                data = dict(row)
+                cookies.append({
+                    'url': self.build_cookie_url(data['host_key'], data['is_secure'], data['path']),
+                    'domain': data['host_key'], 'name': data['name'],
+                    'value': data['encrypted_value'], 'path': data['path'],
+                    'sameSite': SAME_SITE.get(data['samesite'], 'unspecified'),
+                    'secure': bool(data['is_secure']), 'httpOnly': bool(data['is_httponly']),
+                    'hostOnly': not data['host_key'].startswith('.'),
+                    'session': not data['is_persistent'],
+                    'expirationDate': self.ldap_to_unix(data['expires_utc']),
+                    'creationDate': self.ldap_to_unix(data['creation_utc']),
+                    'topFrameSiteKey': data.get('top_frame_site_key') or '',
+                    'hasCrossSiteAncestor': bool(data.get('has_cross_site_ancestor')),
+                    'sourceScheme': data.get('source_scheme', 0),
+                    'sourcePort': data.get('source_port', -1),
+                })
+            return cookies
+
+    def get_unique_cookies(self, cookies_arr: List[Dict]) -> List[Dict]:
+        def identity(cookie):
+            return (cookie.get('domain', ''), cookie.get('name', ''),
+                    cookie.get('path') or '/', cookie.get('topFrameSiteKey') or '')
+        existing = {identity(cookie) for cookie in self.load_cookies_from_file()}
         result = []
-
-        for cookies in chunked_cookies_arr:
-            query_placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(cookies))
-            query = f"insert or replace into cookies (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, is_same_party, last_update_utc) values {query_placeholders}"
-
-            query_params = []
-            for cookie in cookies:
-                creation_date = cookie.get("creationDate", self.unix_to_ldap(today_unix))
-                expiration_date = 0 if cookie.get("session", False) else self.unix_to_ldap(cookie.get("expirationDate", 0))
-                encrypted_value = cookie["value"]
-                value = cookie["value"]
-                samesite = next(key for key, value in SAME_SITE.items() if value == cookie.get("sameSite", "-1"))
-                is_secure = 1 if cookie["name"].startswith("__Host-") or cookie["name"].startswith("__Secure-") else int(cookie.get("secure", 0))
-                source_scheme = 2 if is_secure == 1 else 1
-                source_port = 443 if is_secure == 1 else 80
-                is_persistent = 0 if cookie.get("session") else 1 if expiration_date != 0 else 0
-
-                if cookie.get("domain") == ".mail.google.com" and cookie["name"] == "COMPASS":
-                    expiration_date = 0
-                    is_persistent = 0
-
-                query_params.append((
-                    creation_date,
-                    cookie.get("domain", ""),
-                    "",
-                    cookie["name"],
-                    "",
-                    cookie["value"],
-                    cookie.get("path", ""),
-                    expiration_date,
-                    is_secure,
-                    int(cookie.get("httpOnly", 0)),
-                    0,
-                    0 if expiration_date == 0 else 1,
-                    is_persistent,
-                    1,
-                    samesite,
-                    source_scheme,
-                    source_port,
-                    0,
-                    0
-                ))
-
-            result.append((query, query_params))
-
+        for cookie in cookies_arr:
+            key = identity(cookie)
+            if key not in existing:
+                result.append(cookie)
+                existing.add(key)
         return result
 
-    def load_cookies_from_file(self, cookies_file_path=None, is_second_try=False) -> List[Dict[str, any]]:
-        db = None
-        cookies = []
-
-        is_network_folder = 'Network' in cookies_file_path
-        second_cookies_file_path = os.path.join(self.tmpdir, f'gologin_{self.profile_id}', 'Default', 'Cookies' if is_network_folder else 'Network', 'Cookies')
-
-        try:
-            db = self.get_db(cookies_file_path)
-            cookies_rows = db.execute('select * from cookies')
-            cookies_rows = cookies_rows.fetchall()
-
-            for row in cookies_rows:
-                row_data = dict(zip(COOKIE_ROW_COLUMN_NAMES, row))
-                cookies.append({
-                    'url': self.build_cookie_url(row_data['host_key'], row_data['is_secure'], row_data['path']),
-                    'domain': row_data['host_key'],
-                    'name': row_data['name'],
-                    'value': row_data['encrypted_value'],
-                    'path': row_data['path'],
-                    'sameSite': SAME_SITE[row_data['samesite']],
-                    'secure': bool(row_data['is_secure']),
-                    'httpOnly': bool(row_data['is_httponly']),
-                    'hostOnly': not row_data['host_key'].startswith('.'),
-                    'session': not row_data['is_persistent'],
-                    'expirationDate': self.ldap_to_unix(row_data['expires_utc']),
-                    'creationDate': self.ldap_to_unix(row_data['creation_utc']),
-                })
-        except Exception as error:
-            print('load_cookies_from_file', error)
-            if not is_second_try:   
-                cookies = self.load_cookies_from_file(second_cookies_file_path, True)
-            raise error
-        finally:
-            if db:
-                db.close()
-        if len(cookies) == 0 and not is_second_try:
-            cookies = self.load_cookies_from_file(second_cookies_file_path, True)
-        return cookies
-
-    def get_unique_cookies(self, cookies_arr: List[Dict[str, any]]) -> List[Dict[str, any]]:
-        try:
-            cookies_file_path = self.get_cookies_file_path()
-            cookies_in_file = self.load_cookies_from_file(cookies_file_path)
-
-            def make_cookie_id(cookie: Dict[str, any]) -> str:
-                return f"{cookie.get('name', '')}-{cookie.get('domain', '')}-{cookie.get('path', '')}"
-
-            existing_cookie_ids = {make_cookie_id(cookie) for cookie in cookies_in_file}
-
-            return [cookie for cookie in cookies_arr if make_cookie_id(cookie) not in existing_cookie_ids]
-        except Exception as error:
-            print('get_unique_cookies error:', error)
-            return cookies_arr
-
-    def unix_to_ldap(self, unixtime: int) -> int:
-        if unixtime == 0:
-            return unixtime
-
-        MAX_SQLITE_INT = 2**63 - 1
-        MAX_UNIX_SECONDS = 32503680000  # year 3000 — anything above this is likely already ms or LDAP
-
-        normalized = unixtime / 1000 if unixtime > MAX_UNIX_SECONDS else unixtime
-
-        win32_epoch = datetime.datetime(1601, 1, 1, tzinfo=datetime.timezone.utc)
-        epoch_diff_seconds = (datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc) - win32_epoch).total_seconds()
-
-        windows_seconds = normalized + epoch_diff_seconds
-        ldap_timestamp = int(windows_seconds * 10000000)
-
-        return min(ldap_timestamp, MAX_SQLITE_INT)
+    def unix_to_ldap(self, unixtime):
+        # Historical method name retained for compatibility. Chromium uses
+        # microseconds since 1601, not Windows FILETIME's 100 ns ticks.
+        return unix_to_chromium(unixtime)
 
     def ldap_to_unix(self, ldap):
-        ldap_str = str(int(ldap))  # Convert to integer first to avoid decimals
-        ldap_length = len(ldap_str)
+        return chromium_to_unix(ldap)
 
-        if ldap == 0 or ldap_length > 18:
-            return ldap
+    def build_cookie_url(self, domain, secure, path):
+        return ('https://' if secure else 'http://') + domain.lstrip('.') + path
 
-        _ldap = ldap
-        if ldap_length < 18:
-            _ldap = int(ldap_str + '0' * (18 - ldap_length))  # Padding zeros to the integer part
+    def chunk(self, arr, chunk_size=1):
+        return [arr[i:i + chunk_size] for i in range(0, len(arr), chunk_size)] if chunk_size > 0 else []
 
-        # Create a datetime object for January 1, 1601
-        win32_epoch = datetime.datetime(1601, 1, 1, tzinfo=datetime.timezone.utc)
-        # Convert this to a Unix timestamp in milliseconds
-        win32filetime_epoch = int(win32_epoch.timestamp() * 1000)
+    def get_cookies_file_path(self):
+        network, legacy = self._cookie_paths()
+        return str(network if network.exists() or not legacy.exists() else legacy)
 
-        return (_ldap / 10000 + win32filetime_epoch) / 1000
-
-    def build_cookie_url(self, domain: str, secure: bool, path: str) -> str:
-        domain_without_dot = domain[1:] if domain.startswith('.') else domain
-        protocol = 'https://' if secure else 'http://'
-
-        return protocol + domain_without_dot + path
-
-    def chunk(self, arr: List, chunk_size: int = 1) -> List[List]:
-        if chunk_size <= 0:
-            return []
-
-        return [arr[i:i + chunk_size] for i in range(0, len(arr), chunk_size)]
-
-    def get_cookies_file_path(self) -> str:
-        base_cookies_file_path = os.path.join(self.tmpdir, f'gologin_{self.profile_id}', 'Default', 'Cookies')
-        bypass_cookies_file_path = os.path.join(self.tmpdir, f'gologin_{self.profile_id}', 'Default', 'Network', 'Cookies')
-
-        if access(base_cookies_file_path, F_OK):
-            return base_cookies_file_path
-
-        if access(bypass_cookies_file_path, F_OK):
-            return bypass_cookies_file_path
-
-        return base_cookies_file_path
-
-
-    def write_cookies_to_file(self, cookies, is_second_time = False, cookies_table_query = None):
-        print ('write_cookies_to_file')
-
-        result_cookies = []
+    def write_cookies_to_file(self, cookies, is_second_time=False, cookies_table_query=None):
+        path = self.get_cookies_file_path()
+        if not Path(path).exists():
+            self.create_db_file(path, create_cookies_table_query=cookies_table_query)
+        self._repair_file(path)
+        decoded = []
         for cookie in cookies:
-            buffer_data = cookie['value'].get('data', [])
-            # print('buffer_data', buffer_data)
-            cookie_value = bytes(buffer_data)
-            # print('cookie_value', cookie_value)
-            result_cookies.append({**cookie, 'value': cookie_value})
-
-        base_cookies_file_path = os.path.join(self.tmpdir, f'gologin_{self.profile_id}', 'Default', 'Cookies')
-        bypass_cookies_file_path = os.path.join(self.tmpdir, f'gologin_{self.profile_id}', 'Default', 'Network', 'Cookies')
-
-        unique_cookies = self.get_unique_cookies(result_cookies)
-        
-        db = self.get_db(base_cookies_file_path)
-        cursor = db.cursor()
-
-        try:
-            if len(unique_cookies) > 0:
-                chunk_insert_values = self.get_chunked_insert_values(unique_cookies)
-                print('chunk_insert_values', chunk_insert_values)
-                for query, query_params in chunk_insert_values:
-                    for params in query_params:
-                        res = cursor.execute(query, params)
-            print('res')
-            db.commit()
-            db.close()
-        except Exception as error:
-            print('write_cookies_to_file exception:', error, error.__traceback__.tb_lineno)
-            if is_second_time:
-                raise error
-            else:
-                try:
-                    if os.path.exists(base_cookies_file_path):
-                        os.remove(base_cookies_file_path)
-                        print(f"Removed existing cookies file at {base_cookies_file_path}")
-                except Exception as e:
-                    print(f"Error removing cookies file: {str(e)}")
-                self.create_db_file(base_cookies_file_path, bypass_cookies_file_path, cookies_table_query)
-                self.write_cookies_to_file(cookies, True)
-        finally:
-            if db and unique_cookies:
-                db.close()
-                # Copy cookies file from base path to bypass path
-                try:
-                    self._ensure_directory_exists(bypass_cookies_file_path)
-                    with open(base_cookies_file_path, 'rb') as src_file:
-                        with open(bypass_cookies_file_path, 'wb') as dst_file:
-                            dst_file.write(src_file.read())
-                    print(f'Successfully copied cookies from {base_cookies_file_path} to {bypass_cookies_file_path}')
-                except Exception as e:
-                    print(f'Error copying cookies file: {str(e)}')
-                
+            value = cookie['value']
+            if isinstance(value, dict) and isinstance(value.get('data'), list):
+                value = bytes(value['data'])
+            elif not isinstance(value, bytes):
+                raise ValueError('Expected an encrypted cookie buffer')
+            decoded.append({**cookie, 'value': value})
+        unique = self.get_unique_cookies(decoded)
+        with closing(self.get_db(path)) as db, db:
+            columns = {row[1] for row in db.execute('PRAGMA table_info(cookies)')}
+            for query, parameters in self.get_chunked_insert_values(unique, columns):
+                db.executemany(query, parameters)
+        # Do not copy a legacy DB over Network/Cookies, nor recreate either
+        # database after an SQL error. Preserve metadata, indexes and values.

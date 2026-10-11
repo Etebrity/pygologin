@@ -791,10 +791,19 @@ class GoLogin(object):
             self.createEmptyProfile()
         self.updatePreferences()
 
-        if self.writeCookiesFromServer and self.profile.get('cookies').get('userCookies'):
+        self.repairCookies()
+
+        if self.writeCookiesFromServer and (self.profile.get('cookies') or {}).get('userCookies'):
             self.downloadCookies()
             print('cookies downloaded')
         return self.profile_path
+
+    def repairCookies(self):
+        # Profile databases must be repaired before Chromium opens them,
+        # including profiles without a separate server cookie import.
+        return CookiesManager(
+            profile_id=self.profile_id, tmpdir=self.tmpdir
+        ).repair_cookies()
 
     def downloadCookies(self):
         api_base_url = API_URL
@@ -805,8 +814,8 @@ class GoLogin(object):
         )
 
         cookies_table_query = self.profile.get('createCookiesTableQuery')
-        cookiesData = self.profile.get('cookies')
-        cookies = cookiesData.get('cookies')
+        cookiesData = self.profile.get('cookies') or {}
+        cookies = cookiesData.get('cookies') or []
 
         try:
             cookiesManagerInst.write_cookies_to_file(cookies, False, cookies_table_query)
