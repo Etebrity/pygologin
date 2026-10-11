@@ -262,13 +262,11 @@ class CookiesManager():
 
         unique_cookies = self.get_unique_cookies(result_cookies)
         
-        print('unique_cookies', unique_cookies)
         db = self.get_db(base_cookies_file_path)
         cursor = db.cursor()
 
         try:
             if len(unique_cookies) > 0:
-                print('unique_cookies111', unique_cookies)
                 chunk_insert_values = self.get_chunked_insert_values(unique_cookies)
                 print('chunk_insert_values', chunk_insert_values)
                 for query, query_params in chunk_insert_values:
